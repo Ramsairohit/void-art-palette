@@ -28,11 +28,9 @@ interface RecentActivity {
   action: string;
   table_name: string;
   created_at: string;
+  user_id: string | null;
   new_data: Record<string, unknown> | null;
-  profiles: {
-    full_name: string | null;
-    email: string;
-  } | null;
+  userName: string;
 }
 
 const Dashboard = () => {
@@ -67,21 +65,43 @@ const Dashboard = () => {
 
       if (catError) throw catError;
 
-      // Fetch recent activity
+      // Fetch recent activity (without join)
       const { data: activities, error: actError } = await supabase
         .from('audit_logs')
-        .select(`
-          id,
-          action,
-          table_name,
-          created_at,
-          new_data,
-          profiles:user_id (full_name, email)
-        `)
+        .select('id, action, table_name, created_at, new_data, user_id')
         .order('created_at', { ascending: false })
         .limit(5);
 
       if (actError) throw actError;
+
+      // Fetch profiles for the user_ids in activities
+      const userIds = [...new Set(activities?.map(a => a.user_id).filter(Boolean) as string[])];
+      let profilesMap: Record<string, string> = {};
+      
+      if (userIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, full_name, email')
+          .in('id', userIds);
+        
+        if (profiles) {
+          profilesMap = profiles.reduce((acc, p) => {
+            acc[p.id] = p.full_name || p.email.split('@')[0];
+            return acc;
+          }, {} as Record<string, string>);
+        }
+      }
+
+      // Map activities with user names
+      const mappedActivities: RecentActivity[] = (activities || []).map(activity => ({
+        id: activity.id,
+        action: activity.action,
+        table_name: activity.table_name,
+        created_at: activity.created_at,
+        user_id: activity.user_id,
+        new_data: activity.new_data as Record<string, unknown> | null,
+        userName: activity.user_id ? profilesMap[activity.user_id] || 'Unknown' : 'System',
+      }));
 
       // Calculate stats
       const totalItems = items?.length || 0;
@@ -104,7 +124,7 @@ const Dashboard = () => {
         min_quantity: item.min_quantity,
       })));
 
-      setRecentActivity(activities || []);
+      setRecentActivity(mappedActivities);
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
     } finally {
@@ -135,6 +155,11 @@ const Dashboard = () => {
       case 'DELETE': return 'text-destructive';
       default: return 'text-muted-foreground';
     }
+  };
+
+  const getItemName = (newData: Record<string, unknown> | null): string => {
+    if (!newData) return 'item';
+    return typeof newData.name === 'string' ? newData.name : 'item';
   };
 
   if (loading) {
@@ -309,11 +334,11 @@ const Dashboard = () => {
                             {getActionLabel(activity.action)}
                           </span>{' '}
                           <span className="text-foreground">
-                            {activity.new_data?.name || 'item'}
+                            {getItemName(activity.new_data)}
                           </span>
                         </p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          by {activity.profiles?.full_name || activity.profiles?.email?.split('@')[0] || 'System'} • {format(new Date(activity.created_at), 'MMM d, h:mm a')}
+                          by {activity.userName} • {format(new Date(activity.created_at), 'MMM d, h:mm a')}
                         </p>
                       </div>
                     </div>
